@@ -22,6 +22,9 @@ labels: "type-feature"
   Use this space to post links to the places where you have already discussed this feature proposal:
 -->
 
+**Guidelines for Proposing Enhancements**
+
+For guidance on proposing new features or enhancements, please refer to the [enhancement guidelines](../../../../Doc/howto/enhancement.rst).
 
 <!--
 You can freely edit this text. Remove any lines you believe are unnecessary.
