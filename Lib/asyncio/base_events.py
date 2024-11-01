@@ -30,6 +30,7 @@ import traceback
 import sys
 import warnings
 import weakref
+from typing import Any, Callable, Coroutine, Dict, List, Optional, Tuple, Union
 
 try:
     import ssl
@@ -68,7 +69,7 @@ _HAS_IPv6 = hasattr(socket, 'AF_INET6')
 MAXIMUM_SELECT_TIMEOUT = 24 * 3600
 
 
-def _format_handle(handle):
+def _format_handle(handle: events.Handle) -> str:
     cb = handle._callback
     if isinstance(getattr(cb, '__self__', None), tasks.Task):
         # format the task
@@ -77,7 +78,7 @@ def _format_handle(handle):
         return str(handle)
 
 
-def _format_pipe(fd):
+def _format_pipe(fd: Union[int, None]) -> str:
     if fd == subprocess.PIPE:
         return '<pipe>'
     elif fd == subprocess.STDOUT:
@@ -86,7 +87,7 @@ def _format_pipe(fd):
         return repr(fd)
 
 
-def _set_reuseport(sock):
+def _set_reuseport(sock: socket.socket) -> None:
     if not hasattr(socket, 'SO_REUSEPORT'):
         raise ValueError('reuse_port not supported by socket module')
     else:
@@ -97,7 +98,7 @@ def _set_reuseport(sock):
                              'SO_REUSEPORT defined but not implemented.')
 
 
-def _ipaddr_info(host, port, family, type, proto, flowinfo=0, scopeid=0):
+def _ipaddr_info(host: Optional[str], port: Optional[Union[str, int]], family: int, type: int, proto: int, flowinfo: int = 0, scopeid: int = 0) -> Optional[Tuple[int, int, int, str, Union[Tuple[str, int], Tuple[str, int, int, int]]]]:
     # Try to skip getaddrinfo if "host" is already an IP. Users might have
     # handled name resolution in their own code and pass in resolved IPs.
     if not hasattr(socket, 'inet_pton'):
@@ -156,10 +157,10 @@ def _ipaddr_info(host, port, family, type, proto, flowinfo=0, scopeid=0):
     return None
 
 
-def _interleave_addrinfos(addrinfos, first_address_family_count=1):
+def _interleave_addrinfos(addrinfos: List[Tuple[int, int, int, str, Union[Tuple[str, int], Tuple[str, int, int, int]]]], first_address_family_count: int = 1) -> List[Tuple[int, int, int, str, Union[Tuple[str, int], Tuple[str, int, int, int]]]]:
     """Interleave list of addrinfo tuples by family."""
     # Group addresses by family
-    addrinfos_by_family = collections.OrderedDict()
+    addrinfos_by_family: Dict[int, List[Tuple[int, int, int, str, Union[Tuple[str, int], Tuple[str, int, int, int]]]]] = collections.OrderedDict()
     for addr in addrinfos:
         family = addr[0]
         if family not in addrinfos_by_family:
@@ -178,7 +179,7 @@ def _interleave_addrinfos(addrinfos, first_address_family_count=1):
     return reordered
 
 
-def _run_until_complete_cb(fut):
+def _run_until_complete_cb(fut: futures.Future) -> None:
     if not fut.cancelled():
         exc = fut.exception()
         if isinstance(exc, (SystemExit, KeyboardInterrupt)):
@@ -189,23 +190,23 @@ def _run_until_complete_cb(fut):
 
 
 if hasattr(socket, 'TCP_NODELAY'):
-    def _set_nodelay(sock):
+    def _set_nodelay(sock: socket.socket) -> None:
         if (sock.family in {socket.AF_INET, socket.AF_INET6} and
                 sock.type == socket.SOCK_STREAM and
                 sock.proto == socket.IPPROTO_TCP):
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
 else:
-    def _set_nodelay(sock):
+    def _set_nodelay(sock: socket.socket) -> None:
         pass
 
 
-def _check_ssl_socket(sock):
+def _check_ssl_socket(sock: socket.socket) -> None:
     if ssl is not None and isinstance(sock, ssl.SSLSocket):
         raise TypeError("Socket cannot be of type SSLSocket")
 
 
 class _SendfileFallbackProtocol(protocols.Protocol):
-    def __init__(self, transp):
+    def __init__(self, transp: transports._FlowControlMixin) -> None:
         if not isinstance(transp, transports._FlowControlMixin):
             raise TypeError("transport should be _FlowControlMixin instance")
         self._transport = transp
@@ -219,7 +220,7 @@ class _SendfileFallbackProtocol(protocols.Protocol):
         else:
             self._write_ready_fut = None
 
-    async def drain(self):
+    async def drain(self) -> None:
         if self._transport.is_closing():
             raise ConnectionError("Connection closed by peer")
         fut = self._write_ready_fut
@@ -227,11 +228,11 @@ class _SendfileFallbackProtocol(protocols.Protocol):
             return
         await fut
 
-    def connection_made(self, transport):
+    def connection_made(self, transport: transports.BaseTransport) -> None:
         raise RuntimeError("Invalid state: "
                            "connection should have been established already.")
 
-    def connection_lost(self, exc):
+    def connection_lost(self, exc: Optional[Exception]) -> None:
         if self._write_ready_fut is not None:
             # Never happens if peer disconnects after sending the whole content
             # Thus disconnection is always an exception from user perspective
@@ -242,24 +243,24 @@ class _SendfileFallbackProtocol(protocols.Protocol):
                 self._write_ready_fut.set_exception(exc)
         self._proto.connection_lost(exc)
 
-    def pause_writing(self):
+    def pause_writing(self) -> None:
         if self._write_ready_fut is not None:
             return
         self._write_ready_fut = self._transport._loop.create_future()
 
-    def resume_writing(self):
+    def resume_writing(self) -> None:
         if self._write_ready_fut is None:
             return
         self._write_ready_fut.set_result(False)
         self._write_ready_fut = None
 
-    def data_received(self, data):
+    def data_received(self, data: bytes) -> None:
         raise RuntimeError("Invalid state: reading should be paused")
 
-    def eof_received(self):
+    def eof_received(self) -> None:
         raise RuntimeError("Invalid state: reading should be paused")
 
-    async def restore(self):
+    async def restore(self) -> None:
         self._transport.set_protocol(self._proto)
         if self._should_resume_reading:
             self._transport.resume_reading()
@@ -274,41 +275,40 @@ class _SendfileFallbackProtocol(protocols.Protocol):
 
 class Server(events.AbstractServer):
 
-    def __init__(self, loop, sockets, protocol_factory, ssl_context, backlog,
-                 ssl_handshake_timeout, ssl_shutdown_timeout=None):
+    def __init__(self, loop: events.AbstractEventLoop, sockets: List[socket.socket], protocol_factory: Callable[[], protocols.Protocol], ssl_context: Optional[ssl.SSLContext], backlog: int, ssl_handshake_timeout: Optional[float], ssl_shutdown_timeout: Optional[float] = None) -> None:
         self._loop = loop
         self._sockets = sockets
         self._active_count = 0
-        self._waiters = []
+        self._waiters: List[futures.Future] = []
         self._protocol_factory = protocol_factory
         self._backlog = backlog
         self._ssl_context = ssl_context
         self._ssl_handshake_timeout = ssl_handshake_timeout
         self._ssl_shutdown_timeout = ssl_shutdown_timeout
         self._serving = False
-        self._serving_forever_fut = None
+        self._serving_forever_fut: Optional[futures.Future] = None
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f'<{self.__class__.__name__} sockets={self.sockets!r}>'
 
-    def _attach(self):
+    def _attach(self) -> None:
         assert self._sockets is not None
         self._active_count += 1
 
-    def _detach(self):
+    def _detach(self) -> None:
         assert self._active_count > 0
         self._active_count -= 1
         if self._active_count == 0 and self._sockets is None:
             self._wakeup()
 
-    def _wakeup(self):
+    def _wakeup(self) -> None:
         waiters = self._waiters
         self._waiters = None
         for waiter in waiters:
             if not waiter.done():
                 waiter.set_result(waiter)
 
-    def _start_serving(self):
+    def _start_serving(self) -> None:
         if self._serving:
             return
         self._serving = True
@@ -319,19 +319,19 @@ class Server(events.AbstractServer):
                 self, self._backlog, self._ssl_handshake_timeout,
                 self._ssl_shutdown_timeout)
 
-    def get_loop(self):
+    def get_loop(self) -> events.AbstractEventLoop:
         return self._loop
 
-    def is_serving(self):
+    def is_serving(self) -> bool:
         return self._serving
 
     @property
-    def sockets(self):
+    def sockets(self) -> Tuple[trsock.TransportSocket, ...]:
         if self._sockets is None:
             return ()
         return tuple(trsock.TransportSocket(s) for s in self._sockets)
 
-    def close(self):
+    def close(self) -> None:
         sockets = self._sockets
         if sockets is None:
             return
@@ -350,13 +350,13 @@ class Server(events.AbstractServer):
         if self._active_count == 0:
             self._wakeup()
 
-    async def start_serving(self):
+    async def start_serving(self) -> None:
         self._start_serving()
         # Skip one loop iteration so that all 'loop.add_reader'
         # go through.
         await tasks.sleep(0)
 
-    async def serve_forever(self):
+    async def serve_forever(self) -> None:
         if self._serving_forever_fut is not None:
             raise RuntimeError(
                 f'server {self!r} is already being awaited on serve_forever()')
@@ -377,7 +377,7 @@ class Server(events.AbstractServer):
         finally:
             self._serving_forever_fut = None
 
-    async def wait_closed(self):
+    async def wait_closed(self) -> None:
         if self._sockets is None or self._waiters is None:
             return
         waiter = self._loop.create_future()
@@ -387,47 +387,47 @@ class Server(events.AbstractServer):
 
 class BaseEventLoop(events.AbstractEventLoop):
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._timer_cancelled_count = 0
         self._closed = False
         self._stopping = False
-        self._ready = collections.deque()
-        self._scheduled = []
-        self._default_executor = None
+        self._ready: collections.deque[events.Handle] = collections.deque()
+        self._scheduled: List[events.TimerHandle] = []
+        self._default_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
         self._internal_fds = 0
         # Identifier of the thread running the event loop, or None if the
         # event loop is not running
-        self._thread_id = None
+        self._thread_id: Optional[int] = None
         self._clock_resolution = time.get_clock_info('monotonic').resolution
-        self._exception_handler = None
+        self._exception_handler: Optional[Callable[[events.AbstractEventLoop, Dict[str, Any]], None]] = None
         self.set_debug(coroutines._is_debug_mode())
         # In debug mode, if the execution of a callback or a step of a task
         # exceed this duration in seconds, the slow callback/task is logged.
         self.slow_callback_duration = 0.1
-        self._current_handle = None
-        self._task_factory = None
+        self._current_handle: Optional[events.Handle] = None
+        self._task_factory: Optional[Callable[[events.AbstractEventLoop, Coroutine[Any, Any, Any]], tasks.Task]] = None
         self._coroutine_origin_tracking_enabled = False
-        self._coroutine_origin_tracking_saved_depth = None
+        self._coroutine_origin_tracking_saved_depth: Optional[int] = None
 
         # A weak set of all asynchronous generators that are
         # being iterated by the loop.
-        self._asyncgens = weakref.WeakSet()
+        self._asyncgens: weakref.WeakSet = weakref.WeakSet()
         # Set to True when `loop.shutdown_asyncgens` is called.
         self._asyncgens_shutdown_called = False
         # Set to True when `loop.shutdown_default_executor` is called.
         self._executor_shutdown_called = False
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return (
             f'<{self.__class__.__name__} running={self.is_running()} '
             f'closed={self.is_closed()} debug={self.get_debug()}>'
         )
 
-    def create_future(self):
+    def create_future(self) -> futures.Future:
         """Create a Future object attached to the loop."""
         return futures.Future(loop=self)
 
-    def create_task(self, coro, *, name=None, context=None):
+    def create_task(self, coro: Coroutine[Any, Any, Any], *, name: Optional[str] = None, context: Optional[Dict[str, Any]] = None) -> tasks.Task:
         """Schedule a coroutine object.
 
         Return a task object.
@@ -448,7 +448,7 @@ class BaseEventLoop(events.AbstractEventLoop):
 
         return task
 
-    def set_task_factory(self, factory):
+    def set_task_factory(self, factory: Optional[Callable[[events.AbstractEventLoop, Coroutine[Any, Any, Any]], tasks.Task]]) -> None:
         """Set a task factory that will be used by loop.create_task().
 
         If factory is None the default task factory will be set.
@@ -462,47 +462,46 @@ class BaseEventLoop(events.AbstractEventLoop):
             raise TypeError('task factory must be a callable or None')
         self._task_factory = factory
 
-    def get_task_factory(self):
+    def get_task_factory(self) -> Optional[Callable[[events.AbstractEventLoop, Coroutine[Any, Any, Any]], tasks.Task]]:
         """Return a task factory, or None if the default one is in use."""
         return self._task_factory
 
-    def _make_socket_transport(self, sock, protocol, waiter=None, *,
-                               extra=None, server=None):
+    def _make_socket_transport(self, sock: socket.socket, protocol: protocols.Protocol, waiter: Optional[futures.Future] = None, *, extra: Optional[Dict[str, Any]] = None, server: Optional[Server] = None) -> transports.BaseTransport:
         """Create socket transport."""
         raise NotImplementedError
 
     def _make_ssl_transport(
-            self, rawsock, protocol, sslcontext, waiter=None,
-            *, server_side=False, server_hostname=None,
-            extra=None, server=None,
-            ssl_handshake_timeout=None,
-            ssl_shutdown_timeout=None,
-            call_connection_made=True):
+            self, rawsock: socket.socket, protocol: protocols.Protocol, sslcontext: ssl.SSLContext, waiter: Optional[futures.Future] = None,
+            *, server_side: bool = False, server_hostname: Optional[str] = None,
+            extra: Optional[Dict[str, Any]] = None, server: Optional[Server] = None,
+            ssl_handshake_timeout: Optional[float] = None,
+            ssl_shutdown_timeout: Optional[float] = None,
+            call_connection_made: bool = True) -> transports.BaseTransport:
         """Create SSL transport."""
         raise NotImplementedError
 
-    def _make_datagram_transport(self, sock, protocol,
-                                 address=None, waiter=None, extra=None):
+    def _make_datagram_transport(self, sock: socket.socket, protocol: protocols.DatagramProtocol,
+                                 address: Optional[Tuple[str, int]] = None, waiter: Optional[futures.Future] = None, extra: Optional[Dict[str, Any]] = None) -> transports.BaseTransport:
         """Create datagram transport."""
         raise NotImplementedError
 
-    def _make_read_pipe_transport(self, pipe, protocol, waiter=None,
-                                  extra=None):
+    def _make_read_pipe_transport(self, pipe: int, protocol: protocols.Protocol, waiter: Optional[futures.Future] = None,
+                                  extra: Optional[Dict[str, Any]] = None) -> transports.BaseTransport:
         """Create read pipe transport."""
         raise NotImplementedError
 
-    def _make_write_pipe_transport(self, pipe, protocol, waiter=None,
-                                   extra=None):
+    def _make_write_pipe_transport(self, pipe: int, protocol: protocols.Protocol, waiter: Optional[futures.Future] = None,
+                                   extra: Optional[Dict[str, Any]] = None) -> transports.BaseTransport:
         """Create write pipe transport."""
         raise NotImplementedError
 
-    async def _make_subprocess_transport(self, protocol, args, shell,
-                                         stdin, stdout, stderr, bufsize,
-                                         extra=None, **kwargs):
+    async def _make_subprocess_transport(self, protocol: protocols.SubprocessProtocol, args: Union[str, List[str]], shell: bool,
+                                         stdin: Optional[int], stdout: Optional[int], stderr: Optional[int], bufsize: int,
+                                         extra: Optional[Dict[str, Any]] = None, **kwargs: Any) -> transports.BaseTransport:
         """Create subprocess transport."""
         raise NotImplementedError
 
-    def _write_to_self(self):
+    def _write_to_self(self) -> None:
         """Write a byte to self-pipe, to wake up the event loop.
 
         This may be called from a different thread.
@@ -511,24 +510,24 @@ class BaseEventLoop(events.AbstractEventLoop):
         """
         raise NotImplementedError
 
-    def _process_events(self, event_list):
+    def _process_events(self, event_list: List[Tuple[int, int]]) -> None:
         """Process selector events."""
         raise NotImplementedError
 
-    def _check_closed(self):
+    def _check_closed(self) -> None:
         if self._closed:
             raise RuntimeError('Event loop is closed')
 
-    def _check_default_executor(self):
+    def _check_default_executor(self) -> None:
         if self._executor_shutdown_called:
             raise RuntimeError('Executor shutdown has been called')
 
-    def _asyncgen_finalizer_hook(self, agen):
+    def _asyncgen_finalizer_hook(self, agen: Any) -> None:
         self._asyncgens.discard(agen)
         if not self.is_closed():
             self.call_soon_threadsafe(self.create_task, agen.aclose())
 
-    def _asyncgen_firstiter_hook(self, agen):
+    def _asyncgen_firstiter_hook(self, agen: Any) -> None:
         if self._asyncgens_shutdown_called:
             warnings.warn(
                 f"asynchronous generator {agen!r} was scheduled after "
@@ -537,7 +536,7 @@ class BaseEventLoop(events.AbstractEventLoop):
 
         self._asyncgens.add(agen)
 
-    async def shutdown_asyncgens(self):
+    async def shutdown_asyncgens(self) -> None:
         """Shutdown all active asynchronous generators."""
         self._asyncgens_shutdown_called = True
 
@@ -562,7 +561,7 @@ class BaseEventLoop(events.AbstractEventLoop):
                     'asyncgen': agen
                 })
 
-    async def shutdown_default_executor(self):
+    async def shutdown_default_executor(self) -> None:
         """Schedule the shutdown of the default executor."""
         self._executor_shutdown_called = True
         if self._default_executor is None:
@@ -575,7 +574,7 @@ class BaseEventLoop(events.AbstractEventLoop):
         finally:
             thread.join()
 
-    def _do_shutdown(self, future):
+    def _do_shutdown(self, future: futures.Future) -> None:
         try:
             self._default_executor.shutdown(wait=True)
             if not self.is_closed():
@@ -584,14 +583,14 @@ class BaseEventLoop(events.AbstractEventLoop):
             if not self.is_closed():
                 self.call_soon_threadsafe(future.set_exception, ex)
 
-    def _check_running(self):
+    def _check_running(self) -> None:
         if self.is_running():
             raise RuntimeError('This event loop is already running')
         if events._get_running_loop() is not None:
             raise RuntimeError(
                 'Cannot run the event loop while another loop is running')
 
-    def run_forever(self):
+    def run_forever(self) -> None:
         """Run until stop() is called."""
         self._check_closed()
         self._check_running()
@@ -615,7 +614,7 @@ class BaseEventLoop(events.AbstractEventLoop):
             self._set_coroutine_origin_tracking(False)
             sys.set_asyncgen_hooks(*old_agen_hooks)
 
-    def run_until_complete(self, future):
+    def run_until_complete(self, future: Union[futures.Future, Coroutine[Any, Any, Any]]) -> Any:
         """Run until the Future is done.
 
         If the argument is a coroutine, it is wrapped in a Task.
@@ -653,7 +652,7 @@ class BaseEventLoop(events.AbstractEventLoop):
 
         return future.result()
 
-    def stop(self):
+    def stop(self) -> None:
         """Stop running the event loop.
 
         Every callback already scheduled will still run.  This simply informs
@@ -661,7 +660,7 @@ class BaseEventLoop(events.AbstractEventLoop):
         """
         self._stopping = True
 
-    def close(self):
+    def close(self) -> None:
         """Close the event loop.
 
         This clears the queues and shuts down the executor,
@@ -684,21 +683,21 @@ class BaseEventLoop(events.AbstractEventLoop):
             self._default_executor = None
             executor.shutdown(wait=False)
 
-    def is_closed(self):
+    def is_closed(self) -> bool:
         """Returns True if the event loop was closed."""
         return self._closed
 
-    def __del__(self, _warn=warnings.warn):
+    def __del__(self, _warn=warnings.warn) -> None:
         if not self.is_closed():
             _warn(f"unclosed event loop {self!r}", ResourceWarning, source=self)
             if not self.is_running():
                 self.close()
 
-    def is_running(self):
+    def is_running(self) -> bool:
         """Returns True if the event loop is running."""
         return (self._thread_id is not None)
 
-    def time(self):
+    def time(self) -> float:
         """Return the time according to the event loop's clock.
 
         This is a float expressed in seconds since an epoch, but the
@@ -707,7 +706,7 @@ class BaseEventLoop(events.AbstractEventLoop):
         """
         return time.monotonic()
 
-    def call_later(self, delay, callback, *args, context=None):
+    def call_later(self, delay: float, callback: Callable[..., Any], *args: Any, context: Optional[Dict[str, Any]] = None) -> events.TimerHandle:
         """Arrange for a callback to be called at a given time.
 
         Return a Handle: an opaque object with a cancel() method that
@@ -731,7 +730,7 @@ class BaseEventLoop(events.AbstractEventLoop):
             del timer._source_traceback[-1]
         return timer
 
-    def call_at(self, when, callback, *args, context=None):
+    def call_at(self, when: float, callback: Callable[..., Any], *args: Any, context: Optional[Dict[str, Any]] = None) -> events.TimerHandle:
         """Like call_later(), but uses an absolute time.
 
         Absolute time corresponds to the event loop's time() method.
@@ -749,7 +748,7 @@ class BaseEventLoop(events.AbstractEventLoop):
         timer._scheduled = True
         return timer
 
-    def call_soon(self, callback, *args, context=None):
+    def call_soon(self, callback: Callable[..., Any], *args: Any, context: Optional[Dict[str, Any]] = None) -> events.Handle:
         """Arrange for a callback to be called as soon as possible.
 
         This operates as a FIFO queue: callbacks are called in the
@@ -768,7 +767,7 @@ class BaseEventLoop(events.AbstractEventLoop):
             del handle._source_traceback[-1]
         return handle
 
-    def _check_callback(self, callback, method):
+    def _check_callback(self, callback: Callable[..., Any], method: str) -> None:
         if (coroutines.iscoroutine(callback) or
                 coroutines.iscoroutinefunction(callback)):
             raise TypeError(
@@ -778,14 +777,14 @@ class BaseEventLoop(events.AbstractEventLoop):
                 f'a callable object was expected by {method}(), '
                 f'got {callback!r}')
 
-    def _call_soon(self, callback, args, context):
+    def _call_soon(self, callback: Callable[..., Any], args: Tuple[Any, ...], context: Optional[Dict[str, Any]]) -> events.Handle:
         handle = events.Handle(callback, args, self, context)
         if handle._source_traceback:
             del handle._source_traceback[-1]
         self._ready.append(handle)
         return handle
 
-    def _check_thread(self):
+    def _check_thread(self) -> None:
         """Check that the current thread is the thread running the event loop.
 
         Non-thread-safe methods of this class make this assumption and will
@@ -802,7 +801,7 @@ class BaseEventLoop(events.AbstractEventLoop):
                 "Non-thread-safe operation invoked on an event loop other "
                 "than the current one")
 
-    def call_soon_threadsafe(self, callback, *args, context=None):
+    def call_soon_threadsafe(self, callback: Callable[..., Any], *args: Any, context: Optional[Dict[str, Any]] = None) -> events.Handle:
         """Like call_soon(), but thread-safe."""
         self._check_closed()
         if self._debug:
@@ -813,7 +812,7 @@ class BaseEventLoop(events.AbstractEventLoop):
         self._write_to_self()
         return handle
 
-    def run_in_executor(self, executor, func, *args):
+    def run_in_executor(self, executor: Optional[concurrent.futures.Executor], func: Callable[..., Any], *args: Any) -> futures.Future:
         self._check_closed()
         if self._debug:
             self._check_callback(func, 'run_in_executor')
@@ -829,12 +828,12 @@ class BaseEventLoop(events.AbstractEventLoop):
         return futures.wrap_future(
             executor.submit(func, *args), loop=self)
 
-    def set_default_executor(self, executor):
+    def set_default_executor(self, executor: concurrent.futures.ThreadPoolExecutor) -> None:
         if not isinstance(executor, concurrent.futures.ThreadPoolExecutor):
             raise TypeError('executor must be ThreadPoolExecutor instance')
         self._default_executor = executor
 
-    def _getaddrinfo_debug(self, host, port, family, type, proto, flags):
+    def _getaddrinfo_debug(self, host: str, port: Union[str, int], family: int, type: int, proto: int, flags: int) -> List[Tuple[int, int, int, str, Union[Tuple[str, int], Tuple[str, int, int, int]]]]:
         msg = [f"{host}:{port!r}"]
         if family:
             msg.append(f'family={family!r}')
@@ -858,8 +857,8 @@ class BaseEventLoop(events.AbstractEventLoop):
             logger.debug(msg)
         return addrinfo
 
-    async def getaddrinfo(self, host, port, *,
-                          family=0, type=0, proto=0, flags=0):
+    async def getaddrinfo(self, host: str, port: Union[str, int], *,
+                          family: int = 0, type: int = 0, proto: int = 0, flags: int = 0) -> List[Tuple[int, int, int, str, Union[Tuple[str, int], Tuple[str, int, int, int]]]]:
         if self._debug:
             getaddr_func = self._getaddrinfo_debug
         else:
@@ -868,12 +867,12 @@ class BaseEventLoop(events.AbstractEventLoop):
         return await self.run_in_executor(
             None, getaddr_func, host, port, family, type, proto, flags)
 
-    async def getnameinfo(self, sockaddr, flags=0):
+    async def getnameinfo(self, sockaddr: Tuple[str, int], flags: int = 0) -> Tuple[str, str]:
         return await self.run_in_executor(
             None, socket.getnameinfo, sockaddr, flags)
 
-    async def sock_sendfile(self, sock, file, offset=0, count=None,
-                            *, fallback=True):
+    async def sock_sendfile(self, sock: socket.socket, file: Any, offset: int = 0, count: Optional[int] = None,
+                            *, fallback: bool = True) -> int:
         if self._debug and sock.gettimeout() != 0:
             raise ValueError("the socket must be non-blocking")
         _check_ssl_socket(sock)
@@ -887,14 +886,14 @@ class BaseEventLoop(events.AbstractEventLoop):
         return await self._sock_sendfile_fallback(sock, file,
                                                   offset, count)
 
-    async def _sock_sendfile_native(self, sock, file, offset, count):
+    async def _sock_sendfile_native(self, sock: socket.socket, file: Any, offset: int, count: Optional[int]) -> int:
         # NB: sendfile syscall is not supported for SSL sockets and
         # non-mmap files even if sendfile is supported by OS
         raise exceptions.SendfileNotAvailableError(
             f"syscall sendfile is not available for socket {sock!r} "
             f"and file {file!r} combination")
 
-    async def _sock_sendfile_fallback(self, sock, file, offset, count):
+    async def _sock_sendfile_fallback(self, sock: socket.socket, file: Any, offset: int, count: Optional[int]) -> int:
         if offset:
             file.seek(offset)
         blocksize = (
@@ -920,7 +919,7 @@ class BaseEventLoop(events.AbstractEventLoop):
             if total_sent > 0 and hasattr(file, 'seek'):
                 file.seek(offset + total_sent)
 
-    def _check_sendfile_params(self, sock, file, offset, count):
+    def _check_sendfile_params(self, sock: socket.socket, file: Any, offset: int, count: Optional[int]) -> None:
         if 'b' not in getattr(file, 'mode', 'b'):
             raise ValueError("file should be opened in binary mode")
         if not sock.type == socket.SOCK_STREAM:
@@ -941,7 +940,7 @@ class BaseEventLoop(events.AbstractEventLoop):
                 "offset must be a non-negative integer (got {!r})".format(
                     offset))
 
-    async def _connect_sock(self, exceptions, addr_info, local_addr_infos=None):
+    async def _connect_sock(self, exceptions: List[List[OSError]], addr_info: Tuple[int, int, int, str, Union[Tuple[str, int], Tuple[str, int, int, int]]], local_addr_infos: Optional[List[Tuple[int, int, int, str, Union[Tuple[str, int], Tuple[str, int, int, int]]]]] = None) -> socket.socket:
         """Create, bind and connect one socket."""
         my_exceptions = []
         exceptions.append(my_exceptions)
@@ -986,13 +985,13 @@ class BaseEventLoop(events.AbstractEventLoop):
             exceptions = my_exceptions = None
 
     async def create_connection(
-            self, protocol_factory, host=None, port=None,
-            *, ssl=None, family=0,
-            proto=0, flags=0, sock=None,
-            local_addr=None, server_hostname=None,
-            ssl_handshake_timeout=None,
-            ssl_shutdown_timeout=None,
-            happy_eyeballs_delay=None, interleave=None):
+            self, protocol_factory: Callable[[], protocols.Protocol], host: Optional[str] = None, port: Optional[Union[str, int]] = None,
+            *, ssl: Optional[Union[bool, ssl.SSLContext]] = None, family: int = 0,
+            proto: int = 0, flags: int = 0, sock: Optional[socket.socket] = None,
+            local_addr: Optional[Tuple[str, int]] = None, server_hostname: Optional[str] = None,
+            ssl_handshake_timeout: Optional[float] = None,
+            ssl_shutdown_timeout: Optional[float] = None,
+            happy_eyeballs_delay: Optional[float] = None, interleave: Optional[int] = None) -> Tuple[transports.BaseTransport, protocols.Protocol]:
         """Connect to a TCP server.
 
         Create a streaming transport connection to a given internet host and
@@ -1062,7 +1061,7 @@ class BaseEventLoop(events.AbstractEventLoop):
             if interleave:
                 infos = _interleave_addrinfos(infos, interleave)
 
-            exceptions = []
+            exceptions: List[List[OSError]] = []
             if happy_eyeballs_delay is None:
                 # not using happy eyeballs
                 for addrinfo in infos:
@@ -1123,10 +1122,10 @@ class BaseEventLoop(events.AbstractEventLoop):
         return transport, protocol
 
     async def _create_connection_transport(
-            self, sock, protocol_factory, ssl,
-            server_hostname, server_side=False,
-            ssl_handshake_timeout=None,
-            ssl_shutdown_timeout=None):
+            self, sock: socket.socket, protocol_factory: Callable[[], protocols.Protocol], ssl: Optional[Union[bool, ssl.SSLContext]],
+            server_hostname: Optional[str], server_side: bool = False,
+            ssl_handshake_timeout: Optional[float] = None,
+            ssl_shutdown_timeout: Optional[float] = None) -> Tuple[transports.BaseTransport, protocols.Protocol]:
 
         sock.setblocking(False)
 
@@ -1150,8 +1149,8 @@ class BaseEventLoop(events.AbstractEventLoop):
 
         return transport, protocol
 
-    async def sendfile(self, transport, file, offset=0, count=None,
-                       *, fallback=True):
+    async def sendfile(self, transport: transports.BaseTransport, file: Any, offset: int = 0, count: Optional[int] = None,
+                       *, fallback: bool = True) -> int:
         """Send a file to transport.
 
         Return the total number of bytes which were sent.
@@ -1197,11 +1196,11 @@ class BaseEventLoop(events.AbstractEventLoop):
         return await self._sendfile_fallback(transport, file,
                                              offset, count)
 
-    async def _sendfile_native(self, transp, file, offset, count):
+    async def _sendfile_native(self, transp: transports.BaseTransport, file: Any, offset: int, count: Optional[int]) -> int:
         raise exceptions.SendfileNotAvailableError(
             "sendfile syscall is not supported")
 
-    async def _sendfile_fallback(self, transp, file, offset, count):
+    async def _sendfile_fallback(self, transp: transports.BaseTransport, file: Any, offset: int, count: Optional[int]) -> int:
         if offset:
             file.seek(offset)
         blocksize = min(count, 16384) if count else 16384
@@ -1226,11 +1225,11 @@ class BaseEventLoop(events.AbstractEventLoop):
                 file.seek(offset + total_sent)
             await proto.restore()
 
-    async def start_tls(self, transport, protocol, sslcontext, *,
-                        server_side=False,
-                        server_hostname=None,
-                        ssl_handshake_timeout=None,
-                        ssl_shutdown_timeout=None):
+    async def start_tls(self, transport: transports.BaseTransport, protocol: protocols.Protocol, sslcontext: ssl.SSLContext, *,
+                        server_side: bool = False,
+                        server_hostname: Optional[str] = None,
+                        ssl_handshake_timeout: Optional[float] = None,
+                        ssl_shutdown_timeout: Optional[float] = None) -> transports.BaseTransport:
         """Upgrade transport to TLS.
 
         Return a new transport that *protocol* should start using
@@ -1274,11 +1273,11 @@ class BaseEventLoop(events.AbstractEventLoop):
 
         return ssl_protocol._app_transport
 
-    async def create_datagram_endpoint(self, protocol_factory,
-                                       local_addr=None, remote_addr=None, *,
-                                       family=0, proto=0, flags=0,
-                                       reuse_port=None,
-                                       allow_broadcast=None, sock=None):
+    async def create_datagram_endpoint(self, protocol_factory: Callable[[], protocols.DatagramProtocol],
+                                       local_addr: Optional[Union[str, Tuple[str, int]]] = None, remote_addr: Optional[Union[str, Tuple[str, int]]] = None, *,
+                                       family: int = 0, proto: int = 0, flags: int = 0,
+                                       reuse_port: Optional[bool] = None,
+                                       allow_broadcast: Optional[bool] = None, sock: Optional[socket.socket] = None) -> Tuple[transports.BaseTransport, protocols.DatagramProtocol]:
         """Create datagram connection."""
         if sock is not None:
             if sock.type == socket.SOCK_STREAM:
@@ -1324,7 +1323,7 @@ class BaseEventLoop(events.AbstractEventLoop):
                                     (local_addr, remote_addr)), )
             else:
                 # join address by (family, protocol)
-                addr_infos = {}  # Using order preserving dict
+                addr_infos: Dict[Tuple[int, int], List[Optional[Union[str, Tuple[str, int]]]]] = {}  # Using order preserving dict
                 for idx, addr in ((0, local_addr), (1, remote_addr)):
                     if addr is not None:
                         if not (isinstance(addr, tuple) and len(addr) == 2):
@@ -1351,7 +1350,7 @@ class BaseEventLoop(events.AbstractEventLoop):
                 if not addr_pairs_info:
                     raise ValueError('can not get address information')
 
-            exceptions = []
+            exceptions: List[OSError] = []
 
             for ((family, proto),
                  (local_address, remote_address)) in addr_pairs_info:
@@ -1408,9 +1407,9 @@ class BaseEventLoop(events.AbstractEventLoop):
 
         return transport, protocol
 
-    async def _ensure_resolved(self, address, *,
-                               family=0, type=socket.SOCK_STREAM,
-                               proto=0, flags=0, loop):
+    async def _ensure_resolved(self, address: Tuple[Optional[str], Optional[Union[str, int]]], *,
+                               family: int = 0, type: int = socket.SOCK_STREAM,
+                               proto: int = 0, flags: int = 0, loop: events.AbstractEventLoop) -> List[Tuple[int, int, int, str, Union[Tuple[str, int], Tuple[str, int, int, int]]]]:
         host, port = address[:2]
         info = _ipaddr_info(host, port, family, type, proto, *address[2:])
         if info is not None:
@@ -1420,7 +1419,7 @@ class BaseEventLoop(events.AbstractEventLoop):
             return await loop.getaddrinfo(host, port, family=family, type=type,
                                           proto=proto, flags=flags)
 
-    async def _create_server_getaddrinfo(self, host, port, family, flags):
+    async def _create_server_getaddrinfo(self, host: str, port: Union[str, int], family: int, flags: int) -> List[Tuple[int, int, int, str, Union[Tuple[str, int], Tuple[str, int, int, int]]]]:
         infos = await self._ensure_resolved((host, port), family=family,
                                             type=socket.SOCK_STREAM,
                                             flags=flags, loop=self)
@@ -1429,18 +1428,18 @@ class BaseEventLoop(events.AbstractEventLoop):
         return infos
 
     async def create_server(
-            self, protocol_factory, host=None, port=None,
+            self, protocol_factory: Callable[[], protocols.Protocol], host: Optional[Union[str, List[str]]] = None, port: Optional[Union[str, int]] = None,
             *,
-            family=socket.AF_UNSPEC,
-            flags=socket.AI_PASSIVE,
-            sock=None,
-            backlog=100,
-            ssl=None,
-            reuse_address=None,
-            reuse_port=None,
-            ssl_handshake_timeout=None,
-            ssl_shutdown_timeout=None,
-            start_serving=True):
+            family: int = socket.AF_UNSPEC,
+            flags: int = socket.AI_PASSIVE,
+            sock: Optional[socket.socket] = None,
+            backlog: int = 100,
+            ssl: Optional[ssl.SSLContext] = None,
+            reuse_address: Optional[bool] = None,
+            reuse_port: Optional[bool] = None,
+            ssl_handshake_timeout: Optional[float] = None,
+            ssl_shutdown_timeout: Optional[float] = None,
+            start_serving: bool = True) -> Server:
         """Create a TCP server.
 
         The host parameter can be a string, in that case the TCP server is
@@ -1568,10 +1567,10 @@ class BaseEventLoop(events.AbstractEventLoop):
         return server
 
     async def connect_accepted_socket(
-            self, protocol_factory, sock,
-            *, ssl=None,
-            ssl_handshake_timeout=None,
-            ssl_shutdown_timeout=None):
+            self, protocol_factory: Callable[[], protocols.Protocol], sock: socket.socket,
+            *, ssl: Optional[Union[bool, ssl.SSLContext]] = None,
+            ssl_handshake_timeout: Optional[float] = None,
+            ssl_shutdown_timeout: Optional[float] = None) -> Tuple[transports.BaseTransport, protocols.Protocol]:
         if sock.type != socket.SOCK_STREAM:
             raise ValueError(f'A Stream Socket was expected, got {sock!r}')
 
@@ -1597,7 +1596,7 @@ class BaseEventLoop(events.AbstractEventLoop):
             logger.debug("%r handled: (%r, %r)", sock, transport, protocol)
         return transport, protocol
 
-    async def connect_read_pipe(self, protocol_factory, pipe):
+    async def connect_read_pipe(self, protocol_factory: Callable[[], protocols.Protocol], pipe: int) -> Tuple[transports.BaseTransport, protocols.Protocol]:
         protocol = protocol_factory()
         waiter = self.create_future()
         transport = self._make_read_pipe_transport(pipe, protocol, waiter)
@@ -1610,10 +1609,10 @@ class BaseEventLoop(events.AbstractEventLoop):
 
         if self._debug:
             logger.debug('Read pipe %r connected: (%r, %r)',
-                         pipe.fileno(), transport, protocol)
+                         pipe, transport, protocol)
         return transport, protocol
 
-    async def connect_write_pipe(self, protocol_factory, pipe):
+    async def connect_write_pipe(self, protocol_factory: Callable[[], protocols.Protocol], pipe: int) -> Tuple[transports.BaseTransport, protocols.Protocol]:
         protocol = protocol_factory()
         waiter = self.create_future()
         transport = self._make_write_pipe_transport(pipe, protocol, waiter)
@@ -1626,10 +1625,10 @@ class BaseEventLoop(events.AbstractEventLoop):
 
         if self._debug:
             logger.debug('Write pipe %r connected: (%r, %r)',
-                         pipe.fileno(), transport, protocol)
+                         pipe, transport, protocol)
         return transport, protocol
 
-    def _log_subprocess(self, msg, stdin, stdout, stderr):
+    def _log_subprocess(self, msg: str, stdin: Optional[int], stdout: Optional[int], stderr: Optional[int]) -> None:
         info = [msg]
         if stdin is not None:
             info.append(f'stdin={_format_pipe(stdin)}')
@@ -1642,14 +1641,14 @@ class BaseEventLoop(events.AbstractEventLoop):
                 info.append(f'stderr={_format_pipe(stderr)}')
         logger.debug(' '.join(info))
 
-    async def subprocess_shell(self, protocol_factory, cmd, *,
-                               stdin=subprocess.PIPE,
-                               stdout=subprocess.PIPE,
-                               stderr=subprocess.PIPE,
-                               universal_newlines=False,
-                               shell=True, bufsize=0,
-                               encoding=None, errors=None, text=None,
-                               **kwargs):
+    async def subprocess_shell(self, protocol_factory: Callable[[], protocols.SubprocessProtocol], cmd: str, *,
+                               stdin: Optional[int] = subprocess.PIPE,
+                               stdout: Optional[int] = subprocess.PIPE,
+                               stderr: Optional[int] = subprocess.PIPE,
+                               universal_newlines: bool = False,
+                               shell: bool = True, bufsize: int = 0,
+                               encoding: Optional[str] = None, errors: Optional[str] = None, text: bool = False,
+                               **kwargs: Any) -> Tuple[transports.BaseTransport, protocols.SubprocessProtocol]:
         if not isinstance(cmd, (bytes, str)):
             raise ValueError("cmd must be a string")
         if universal_newlines:
@@ -1678,12 +1677,12 @@ class BaseEventLoop(events.AbstractEventLoop):
             logger.info('%s: %r', debug_log, transport)
         return transport, protocol
 
-    async def subprocess_exec(self, protocol_factory, program, *args,
-                              stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                              stderr=subprocess.PIPE, universal_newlines=False,
-                              shell=False, bufsize=0,
-                              encoding=None, errors=None, text=None,
-                              **kwargs):
+    async def subprocess_exec(self, protocol_factory: Callable[[], protocols.SubprocessProtocol], program: str, *args: str,
+                              stdin: Optional[int] = subprocess.PIPE, stdout: Optional[int] = subprocess.PIPE,
+                              stderr: Optional[int] = subprocess.PIPE, universal_newlines: bool = False,
+                              shell: bool = False, bufsize: int = 0,
+                              encoding: Optional[str] = None, errors: Optional[str] = None, text: bool = False,
+                              **kwargs: Any) -> Tuple[transports.BaseTransport, protocols.SubprocessProtocol]:
         if universal_newlines:
             raise ValueError("universal_newlines must be False")
         if shell:
@@ -1712,12 +1711,12 @@ class BaseEventLoop(events.AbstractEventLoop):
             logger.info('%s: %r', debug_log, transport)
         return transport, protocol
 
-    def get_exception_handler(self):
+    def get_exception_handler(self) -> Optional[Callable[[events.AbstractEventLoop, Dict[str, Any]], None]]:
         """Return an exception handler, or None if the default one is in use.
         """
         return self._exception_handler
 
-    def set_exception_handler(self, handler):
+    def set_exception_handler(self, handler: Optional[Callable[[events.AbstractEventLoop, Dict[str, Any]], None]]) -> None:
         """Set handler as the new event loop exception handler.
 
         If handler is None, the default exception handler will
@@ -1734,7 +1733,7 @@ class BaseEventLoop(events.AbstractEventLoop):
                             f'got {handler!r}')
         self._exception_handler = handler
 
-    def default_exception_handler(self, context):
+    def default_exception_handler(self, context: Dict[str, Any]) -> None:
         """Default exception handler.
 
         This is called when an exception occurs and no exception
@@ -1784,7 +1783,7 @@ class BaseEventLoop(events.AbstractEventLoop):
 
         logger.error('\n'.join(log_lines), exc_info=exc_info)
 
-    def call_exception_handler(self, context):
+    def call_exception_handler(self, context: Dict[str, Any]) -> None:
         """Call the current event loop's exception handler.
 
         The context argument is a dict containing the following keys:
@@ -1841,22 +1840,22 @@ class BaseEventLoop(events.AbstractEventLoop):
                                  'in custom exception handler',
                                  exc_info=True)
 
-    def _add_callback(self, handle):
+    def _add_callback(self, handle: events.Handle) -> None:
         """Add a Handle to _ready."""
         if not handle._cancelled:
             self._ready.append(handle)
 
-    def _add_callback_signalsafe(self, handle):
+    def _add_callback_signalsafe(self, handle: events.Handle) -> None:
         """Like _add_callback() but called from a signal handler."""
         self._add_callback(handle)
         self._write_to_self()
 
-    def _timer_handle_cancelled(self, handle):
+    def _timer_handle_cancelled(self, handle: events.TimerHandle) -> None:
         """Notification that a TimerHandle has been cancelled."""
         if handle._scheduled:
             self._timer_cancelled_count += 1
 
-    def _run_once(self):
+    def _run_once(self) -> None:
         """Run one full iteration of the event loop.
 
         This calls all currently ready callbacks, polls for I/O,
@@ -1936,7 +1935,7 @@ class BaseEventLoop(events.AbstractEventLoop):
                 handle._run()
         handle = None  # Needed to break cycles when an exception occurs.
 
-    def _set_coroutine_origin_tracking(self, enabled):
+    def _set_coroutine_origin_tracking(self, enabled: bool) -> None:
         if bool(enabled) == bool(self._coroutine_origin_tracking_enabled):
             return
 
@@ -1951,10 +1950,10 @@ class BaseEventLoop(events.AbstractEventLoop):
 
         self._coroutine_origin_tracking_enabled = enabled
 
-    def get_debug(self):
+    def get_debug(self) -> bool:
         return self._debug
 
-    def set_debug(self, enabled):
+    def set_debug(self, enabled: bool) -> None:
         self._debug = enabled
 
         if self.is_running():
