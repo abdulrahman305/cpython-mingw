@@ -210,7 +210,7 @@ jobs:
     needs: [cross-gcc-x86_64]
     runs-on: windows-latest
     steps:
-      - uses: actions/download-artifact@v3
+      - uses: actions/download-artifact@v4.1.7
         with:
           name: build-cross-gcc-x86_64
 
@@ -282,7 +282,7 @@ jobs:
       matrix:
         arch: ['x86_64', 'i686']
     steps:
-      - uses: actions/download-artifact@v3
+      - uses: actions/download-artifact@v4.1.7
         with:
           name: build-cross-llvm-mingw-${{ matrix.arch }}
 
